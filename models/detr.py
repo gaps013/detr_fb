@@ -7,14 +7,24 @@ import torch.nn.functional as F
 from torch import nn
 
 from util import box_ops
-from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
-                       accuracy, get_world_size, interpolate,
-                       is_dist_avail_and_initialized)
+from util.misc import (
+    NestedTensor,
+    accuracy,
+    get_world_size,
+    interpolate,
+    is_dist_avail_and_initialized,
+    nested_tensor_from_tensor_list,
+)
 
 from .backbone import build_backbone
 from .matcher import build_matcher
-from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
-                           dice_loss, sigmoid_focal_loss)
+from .segmentation import (
+    DETRsegm,
+    PostProcessPanoptic,
+    PostProcessSegm,
+    dice_loss,
+    sigmoid_focal_loss,
+)
 from .transformer import build_transformer
 
 
@@ -40,6 +50,7 @@ class DETR(nn.Module):
         self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
         self.backbone = backbone
         self.aux_loss = aux_loss
+        self.num_classes = num_classes
 
     def forward(self, samples: NestedTensor):
         """ The forward expects a NestedTensor, which consists of:
@@ -310,7 +321,9 @@ def build(args):
     # you should pass `num_classes` to be 2 (max_obj_id + 1).
     # For more details on this, check the following discussion
     # https://github.com/facebookresearch/detr/issues/108#issuecomment-650269223
-    num_classes = 20 if args.dataset_file != 'coco' else 91
+    
+    num_classes = args.num_classes
+    # num_classes = args.num_classes
     if args.dataset_file == "coco_panoptic":
         # for panoptic, we just add a num_classes that is large enough to hold
         # max_obj_id + 1, but the exact value doesn't really matter
@@ -320,11 +333,10 @@ def build(args):
     backbone = build_backbone(args)
 
     transformer = build_transformer(args)
-
     model = DETR(
         backbone,
         transformer,
-        num_classes=num_classes,
+        num_classes=args.num_classes,
         num_queries=args.num_queries,
         aux_loss=args.aux_loss,
     )

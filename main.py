@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, DistributedSampler
 
 import datasets
@@ -94,8 +95,12 @@ def get_args_parser():
                         help='start epoch')
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--num_workers', default=2, type=int)
+    parser.add_argument("--num_classes", type=int, default=6, help="Number of classes in the dataset (max_obj_id + 1)")
+    parser.add_argument("--apply_transforms", type=bool, default=False, help="Apply transforms to the dataset")
+    parser.add_argument("--lr_scheduler", type=str, default="cosine", help="Learning rate scheduler")
 
     # distributed training parameters
+    
     parser.add_argument('--world_size', default=1, type=int,
                         help='number of distributed processes')
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
@@ -137,7 +142,11 @@ def main(args):
     ]
     optimizer = torch.optim.AdamW(param_dicts, lr=args.lr,
                                   weight_decay=args.weight_decay)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.lr_drop)
+    if args.lr_scheduler == 'cosine':
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs, eta_min=0)
+    elif args.lr_scheduler == 'step':
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.lr_drop)
+    # lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs, eta_min=0)
 
     dataset_train = build_dataset(image_set='train', args=args)
     dataset_val = build_dataset(image_set='val', args=args)
@@ -175,6 +184,14 @@ def main(args):
                 args.resume, map_location='cpu', check_hash=True)
         else:
             checkpoint = torch.load(args.resume, map_location='cpu')
+        if checkpoint["model"]["class_embed.weight"].shape[0] != args.num_classes+1:
+            print("The number of classes in the checkpoint is different from the one in the model.")
+            checkpoint["model"]['class_embed.weight'] = model_without_ddp.class_embed.weight
+            checkpoint["model"]['class_embed.bias'] = model_without_ddp.class_embed.bias
+            checkpoint["model"]['query_embed.weight']  = model_without_ddp.query_embed.weight
+            
+        
+
         model_without_ddp.load_state_dict(checkpoint['model'])
         if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer'])
@@ -221,8 +238,17 @@ def main(args):
                      'n_parameters': n_parameters}
 
         if args.output_dir and utils.is_main_process():
-            with (output_dir / "log.txt").open("a") as f:
-                f.write(json.dumps(log_stats) + "\n")
+            if (output_dir / "log.json").exists():
+                with (output_dir / "log.json").open("r") as f:
+                    existing_logs = json.load(f)
+                existing_logs.append(log_stats)
+                with (output_dir / "log.json").open("w") as f:
+                    json.dump(existing_logs, f, indent=4)
+            else:
+                with (output_dir / "log.json").open("w") as f:
+                    json.dump([log_stats], f, indent=4)
+            # with (output_dir / "log.json").open("a") as f:
+            #     f.write(json.dumps(log_stats) + "\n")
 
             # for evaluation logs
             if coco_evaluator is not None:
@@ -245,4 +271,5 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    OmegaConf.save(OmegaConf.create(vars(args)), f"{args.output_dir}/config.yaml")
     main(args)
