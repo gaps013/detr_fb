@@ -137,6 +137,7 @@ def make_coco_transforms(image_set, apply_transforms):
             ])
         else:
             return T.Compose([
+                T.RandomHorizontalFlip(),
                 T.RandomResize([512, 512]),
                 normalize,
             ])
