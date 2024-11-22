@@ -30,5 +30,5 @@ ARGS_LIST=(
 # Loop through the arguments and run the Python script with each set of arguments
 for ARGS in "${ARGS_LIST[@]}"; 
 do
-    python3 $PYTHON_SCRIPT $ARGS
+    python -m torch.distributed.launch --nproc_per_node=6 --use_env  $PYTHON_SCRIPT $ARGS
 done
