@@ -6,8 +6,12 @@ import random
 import time
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+import seaborn as sns
 import torch
+from novator.common.utils.utils import load_json
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, DistributedSampler
 
@@ -24,7 +28,7 @@ def get_args_parser():
     parser.add_argument('--lr_backbone', default=1e-5, type=float)
     parser.add_argument('--batch_size', default=2, type=int)
     parser.add_argument('--weight_decay', default=1e-4, type=float)
-    parser.add_argument('--epochs', default=300, type=int)
+    parser.add_argument('--epochs', default=10, type=int)
     parser.add_argument('--lr_drop', default=200, type=int)
     parser.add_argument('--clip_max_norm', default=0.1, type=float,
                         help='gradient clipping max norm')
@@ -81,11 +85,12 @@ def get_args_parser():
 
     # dataset parameters
     parser.add_argument('--dataset_file', default='coco')
-    parser.add_argument('--coco_path', type=str)
+    parser.add_argument('--coco_path', default="/home/shared/Users/gasingh/DETR/data/COCO_58e5e481ecbd2f71eb24e92e7ea000c3df5d1b9bf06cfe206530e8957acc5f73",
+                        type=str)
     parser.add_argument('--coco_panoptic_path', type=str)
     parser.add_argument('--remove_difficult', action='store_true')
 
-    parser.add_argument('--output_dir', default='',
+    parser.add_argument('--output_dir', default="/raid/AAGI/Users/gasingh/GIT_DETR_Exp",
                         help='path where to save, empty for no saving')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
@@ -94,10 +99,11 @@ def get_args_parser():
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
     parser.add_argument('--eval', action='store_true')
-    parser.add_argument('--num_workers', default=2, type=int)
+    parser.add_argument('--num_workers', default=8, type=int)
     parser.add_argument("--num_classes", type=int, default=6, help="Number of classes in the dataset (max_obj_id + 1)")
     parser.add_argument("--apply_transforms", type=bool, default=False, help="Apply transforms to the dataset")
     parser.add_argument("--lr_scheduler", type=str, default="cosine", help="Learning rate scheduler")
+    parser.add_argument("--exp_name", type=str, default="exp", help="Experiment name")
 
     # distributed training parameters
     
@@ -177,7 +183,7 @@ def main(args):
         checkpoint = torch.load(args.frozen_weights, map_location='cpu')
         model_without_ddp.detr.load_state_dict(checkpoint['model'])
 
-    output_dir = Path(args.output_dir)
+    output_dir = Path(args.output_dir).joinpath(args.exp_name)
     if args.resume:
         if args.resume.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
@@ -200,8 +206,8 @@ def main(args):
 
     if args.eval:
         test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                              data_loader_val, base_ds, device, args.output_dir)
-        if args.output_dir:
+                                              data_loader_val, base_ds, device, output_dir)
+        if output_dir:
             utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
         return
 
@@ -214,7 +220,7 @@ def main(args):
             model, criterion, data_loader_train, optimizer, device, epoch,
             args.clip_max_norm)
         lr_scheduler.step()
-        if args.output_dir:
+        if output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']
             # extra checkpoint before LR drop and every 100 epochs
             if (epoch + 1) % args.lr_drop == 0 or (epoch + 1) % 100 == 0:
@@ -229,7 +235,7 @@ def main(args):
                 }, checkpoint_path)
 
         test_stats, coco_evaluator = evaluate(
-            model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir
+            model, criterion, postprocessors, data_loader_val, base_ds, device, output_dir
         )
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
@@ -237,7 +243,7 @@ def main(args):
                      'epoch': epoch,
                      'n_parameters': n_parameters}
 
-        if args.output_dir and utils.is_main_process():
+        if output_dir and utils.is_main_process():
             if (output_dir / "log.json").exists():
                 with (output_dir / "log.json").open("r") as f:
                     existing_logs = json.load(f)
@@ -265,11 +271,33 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
+    data = load_json(output_dir / "log.json")
+    df = pd.DataFrame(data)
+    sns.lineplot(data=df, x="epoch", y="train_loss", label="Train Loss")
+    sns.lineplot(data=df, x="epoch", y="test_loss", label="Test Loss")
+    plt.title("Loss vs Epoch")
+    plt.xlabel("Epoch")
+    plt.ylabel("Combined Loss")
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/loss_vs_epoch.png", dpi=300)
+    coco_score = []
+    for i in range(1, len(df["test_coco_eval_bbox"])):
+        coco_metrics = df["test_coco_eval_bbox"][i]
+        coco_score.append(coco_metrics[0] * 0.9 + coco_metrics[1] * 0.1)
+    epochs = range(1, len(df["test_coco_eval_bbox"]))
+    sns.lineplot(x=epochs, y=coco_score, label="COCO Score")
+    plt.title("COCO Score vs Epoch")
+    plt.xlabel("Epoch")
+    plt.ylabel("COCO Score")
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/coco_score_vs_epoch.png", dpi=300)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('DETR training and evaluation script', parents=[get_args_parser()])
     args = parser.parse_args()
-    if args.output_dir:
-        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-    OmegaConf.save(OmegaConf.create(vars(args)), f"{args.output_dir}/config.yaml")
+    exp_path = Path(args.output_dir).joinpath(args.exp_name)
+    args.exp_path = exp_path
+    if exp_path:
+        Path(exp_path).mkdir(parents=True, exist_ok=True)
+    OmegaConf.save(OmegaConf.create(vars(args)), f"{exp_path}/config.yaml")
     main(args)
